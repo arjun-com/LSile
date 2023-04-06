@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -47,16 +48,8 @@ func GenRSAKeyPair(bits int) (rsa.PublicKey, rsa.PrivateKey) {
 	return privateKey.PublicKey, *privateKey
 }
 
-func DecryptRSA(privateKeyPtr *rsa.PrivateKey, contentEncrypted []byte) []byte {
-	contentDecrypted, err := rsa.DecryptPKCS1v15(rand.Reader, privateKeyPtr, contentEncrypted)
-	ChkErr(err)
-
-	return contentDecrypted
-}
-
-// RSA can only decrypt upto 256 bytes. To circumvent this restriction the following function splits the byte payload received into an array of byte slices each of 256 bytes and decrypts them one at a time.
-func DecryptRSA256Longer(privateKeyPtr *rsa.PrivateKey, contentEncryptedBytesPtr *[]byte) [][]byte {
-	var contentEncryptedByteSlicesArray [][]byte
+func DecryptRSA(privateKey *rsa.PrivateKey, contentEncrypted *[]byte) ([]byte, error) {
+	var contentDecryptedSlicesArray [][]byte
 
 	bytesDone := new(int64)
 	*bytesDone = int64(0)
@@ -64,51 +57,53 @@ func DecryptRSA256Longer(privateKeyPtr *rsa.PrivateKey, contentEncryptedBytesPtr
 	endSliceIndex := new(int64)
 	*endSliceIndex = int64(0)
 
-	numOfSlices := int(math.Ceil(float64(len([]byte(*contentEncryptedBytesPtr))) / 256))
+	numOf256ByteSlices := int(math.Ceil(float64(len(*contentEncrypted)) / 256.0))
 
-	for i := 0; i < numOfSlices; i++ {
+	for i := 0; i < numOf256ByteSlices; i++ {
 		*endSliceIndex = int64(*bytesDone + 256)
-
-		contentEncryptedByteSlicesArray = append(contentEncryptedByteSlicesArray, DecryptRSA(privateKeyPtr, (*contentEncryptedBytesPtr)[*bytesDone:*endSliceIndex]))
-
-		*bytesDone = *bytesDone + 256
-	}
-
-	return contentEncryptedByteSlicesArray
-}
-
-func EncryptRSA(publicKeyPtr *rsa.PublicKey, content []byte) []byte {
-	contentEncrypted, err := rsa.EncryptPKCS1v15(rand.Reader, publicKeyPtr, content)
-	ChkErr(err)
-
-	return contentEncrypted
-}
-
-func EncryptRSA256Longer(publicKeyPtr *rsa.PublicKey, contentPtr *string) [][]byte {
-	contentBytes := []byte(*contentPtr)
-
-	var contentBytesEncryptedArray [][]byte
-
-	bytesDone := new(int64)
-	*bytesDone = int64(0)
-
-	endSliceIndex := new(int64)
-	*endSliceIndex = int64(0)
-
-	numOfByteSlicesInArray := int(math.Ceil(float64(len([]byte(*contentPtr))) / 128))
-
-	for i := 0; i < numOfByteSlicesInArray; i++ {
-		*endSliceIndex = int64(*bytesDone + 128)
-		if i == numOfByteSlicesInArray-1 {
-			*endSliceIndex = int64(len(contentBytes))
+		contentSliceDecrypted, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, (*contentEncrypted)[*bytesDone:*endSliceIndex])
+		if err != nil {
+			return nil, errors.New("*** ERROR: Error while decrypting, data sent by host was not encrypted with the supplied public key.")
 		}
 
-		contentBytesEncryptedArray = append(contentBytesEncryptedArray, EncryptRSA(publicKeyPtr, contentBytes[*bytesDone:*endSliceIndex]))
+		contentDecryptedSlicesArray = append(contentDecryptedSlicesArray, contentSliceDecrypted)
+
+		*bytesDone = *bytesDone + 256
+
+		fmt.Printf("Decrypting data.\n")
+	}
+
+	return ByteSlicesArrayToByteSlices(contentDecryptedSlicesArray), nil
+}
+
+func EncryptRSA(publicKey *rsa.PublicKey, content *[]byte) ([]byte, error) {
+	var contentEncryptedSlicesArray [][]byte
+
+	bytesDone := new(int64)
+	*bytesDone = int64(0)
+
+	endSliceIndex := new(int64)
+	*endSliceIndex = int64(0)
+
+	numOf128ByteSlices := int(math.Ceil(float64(len(*content)) / 128))
+
+	for i := 0; i < numOf128ByteSlices; i++ {
+		*endSliceIndex = int64(*bytesDone + 128)
+		if i == numOf128ByteSlices-1 {
+			*endSliceIndex = int64(len(*content))
+		}
+
+		contentSliceEncrypted, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey, (*content)[*bytesDone:*endSliceIndex])
+		if err != nil {
+			return nil, errors.New("*** ERROR: Error while encrypting, invalid public key received from client.")
+		}
+
+		contentEncryptedSlicesArray = append(contentEncryptedSlicesArray, contentSliceEncrypted)
 
 		*bytesDone = *bytesDone + 128
 	}
 
-	return contentBytesEncryptedArray
+	return ByteSlicesArrayToByteSlices(contentEncryptedSlicesArray), nil
 }
 
 func ByteSlicesArrayToByteSlices(byteSlicesArray [][]byte) []byte {
