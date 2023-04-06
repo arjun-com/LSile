@@ -3,7 +3,7 @@
 
 LSile is a _program_ used for transferring **securely** files over a **local network**.
 
-NOTE: When serving files, the serving program on the host machine will stop if unrecognizable is sent to it. Therefore files are only meant to be served only over a local network.
+NOTE: When serving files, the serving program on the host machine will stop if unrecognizable bytes are sent to it. Therefore files are only meant to be served only over a local network.
 
 # Why LSile?
 
