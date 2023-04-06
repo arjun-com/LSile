@@ -20,12 +20,18 @@ type ClientSpecificEncryptedFile struct {
 }
 
 type ServedFile struct {
-	Path      string
+	Path string
+
 	Name      string
+	NameBytes []byte
+
 	Data      string
 	DataBytes []byte
-	Size      int64
-	Checksum  string
+
+	Size int64
+
+	Checksum      string
+	ChecksumBytes []byte
 }
 
 func sendFile(connPtr *net.Conn, bytesPtr *[]byte, bytesSizePtr int64) {
@@ -58,15 +64,17 @@ func Serve(server *net.Listener, File *ServedFile) {
 	utils.ChkErr(err)
 
 	File.Data = utils.ReadStr(File.Path)
+	File.DataBytes = []byte(File.Data)
 
 	File.Size = utils.Size(File.Path)
 
 	File.Name = file.Name()
 	File.Name = strings.ReplaceAll(File.Name, "\\", "/")
 	File.Name = File.Name[strings.LastIndex(File.Name, "/")+1:]
+	File.NameBytes = []byte(File.Name)
 
-	File.DataBytes = []byte(File.Data)
 	File.Checksum = utils.CreateChecksum(&File.DataBytes)
+	File.ChecksumBytes = []byte(File.Checksum)
 
 	for {
 		clientConn, err := (*server).Accept()
@@ -82,21 +90,42 @@ func handleClientConn(connPtr *net.Conn, File *ServedFile) {
 
 	encryptedFile := ClientSpecificEncryptedFile{}
 
-	publicKeyBytes := make([]byte, 384)
+	publicKeyBytes := make([]byte, 270) // The public key sent by a client will always be 270 bytes in length when sent from LSile.
 	publicKeyBytesLength, err := conn.Read(publicKeyBytes)
-	utils.ChkErr(err)
-	publicKeyPtr, err := x509.ParsePKCS1PublicKey(publicKeyBytes[:publicKeyBytesLength])
-	utils.ChkErr(err)
+	if publicKeyBytesLength != 270 {
+		fmt.Printf("*** ERROR: Length of the public key sent by the client is not parsable, closing connection with this client.")
+		return
+	}
 
-	encryptedFile.ChecksumEncryptedBytes = utils.EncryptRSA(publicKeyPtr, []byte(File.Checksum))
-	utils.ChkErr(err)
+	publicKey, err := x509.ParsePKCS1PublicKey(publicKeyBytes)
+	if err != nil {
+		fmt.Printf("*** ERROR: Error while parsing public key sent by client, closing connection with this client.")
+		return
+	}
+
+	encryptedFile.ChecksumEncryptedBytes, err = utils.EncryptRSA(publicKey, &File.ChecksumBytes)
+	if err != nil {
+		fmt.Printf("%s", err.Error())
+		return
+	}
+
 	_, err = conn.Write(encryptedFile.ChecksumEncryptedBytes)
 	utils.ChkErr(err)
 
-	encryptedFile.DataEncryptedBytes = utils.ByteSlicesArrayToByteSlices(utils.EncryptRSA256Longer(publicKeyPtr, &File.Data))
+	encryptedFile.DataEncryptedBytes, err = utils.EncryptRSA(publicKey, &File.DataBytes)
+	if err != nil {
+		fmt.Printf("%s", err.Error())
+		return
+	}
+
 	sendFile(connPtr, &encryptedFile.DataEncryptedBytes, int64(len(encryptedFile.DataEncryptedBytes)))
 
-	encryptedFile.NameEncryptedBytes = utils.ByteSlicesArrayToByteSlices(utils.EncryptRSA256Longer(publicKeyPtr, &File.Name))
+	encryptedFile.NameEncryptedBytes, err = utils.EncryptRSA(publicKey, &File.NameBytes)
+	if err != nil {
+		fmt.Printf("%s", err.Error())
+		return
+	}
+
 	sendFileName(connPtr, &encryptedFile.NameEncryptedBytes)
 
 	conn.Close()

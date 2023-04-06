@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +21,7 @@ type RecvedFile struct {
 	Path string
 
 	Name               string
+	NameBytes          []byte
 	NameLength         int64
 	NameEncryptedBytes []byte
 
@@ -34,28 +36,29 @@ type RecvedFile struct {
 	ChecksumEncryptedBytesLength int
 }
 
-func recvFileData(connPtr *net.Conn, File *RecvedFile) []byte {
+func recvFileData(connPtr *net.Conn, File *RecvedFile) ([]byte, error) {
 	buffer := new(bytes.Buffer)
 
 	binary.Read(*connPtr, binary.LittleEndian, &File.Size)
-	bytesRead, err := io.CopyN(buffer, *connPtr, File.Size)
-	utils.ChkErr(err)
+	_, err := io.CopyN(buffer, *connPtr, File.Size)
+	if err != nil {
+		return nil, errors.New("*** ERROR: Error while reading data of file to buffer.")
+	}
 
-	fmt.Printf("Received %d bytes from server.\n\n", bytesRead)
-
-	return buffer.Bytes()
+	return buffer.Bytes(), nil
 }
 
-func recvFileName(connPtr *net.Conn, File *RecvedFile) []byte {
+func recvFileName(connPtr *net.Conn, File *RecvedFile) ([]byte, error) {
 	buffer := new(bytes.Buffer)
 
 	binary.Read(*connPtr, binary.LittleEndian, &File.NameLength)
-	bytesRead, err := io.CopyN(buffer, *connPtr, File.NameLength)
-	utils.ChkErr(err)
+	_, err := io.CopyN(buffer, *connPtr, File.NameLength)
+	if err != nil {
+		return nil, errors.New("*** ERROR: Error while reading name of file to buffer.")
 
-	fmt.Printf("Received %d bytes from server.\n\n", bytesRead)
+	}
 
-	return buffer.Bytes()
+	return buffer.Bytes(), nil
 }
 
 func CreateClientTCPConnection(ip string, port string) *net.Conn {
@@ -83,11 +86,20 @@ func Client(connPtr *net.Conn, File *RecvedFile) {
 	File.ChecksumEncryptedBytes = make([]byte, 256)
 	File.ChecksumEncryptedBytesLength, err = (*connPtr).Read(File.ChecksumEncryptedBytes)
 	utils.ChkErr(err)
-	checksumBytes := utils.DecryptRSA(&privateKey, File.ChecksumEncryptedBytes[:File.ChecksumEncryptedBytesLength])
+	checksumBytes, err := utils.DecryptRSA(&privateKey, &File.ChecksumEncryptedBytes)
 	File.Checksum = string(checksumBytes)
 
-	File.DataEncryptedBytes = recvFileData(connPtr, File)
-	File.DataBytes = utils.ByteSlicesArrayToByteSlices(utils.DecryptRSA256Longer(&privateKey, &File.DataEncryptedBytes))
+	File.DataEncryptedBytes, err = recvFileData(connPtr, File)
+	if err != nil {
+		fmt.Printf("%s", err.Error())
+		return
+	}
+
+	File.DataBytes, err = utils.DecryptRSA(&privateKey, &File.DataEncryptedBytes)
+	if err != nil {
+		fmt.Printf("%s", err.Error())
+		return
+	}
 
 	if File.Checksum != utils.CreateChecksum(&File.DataBytes) {
 		fmt.Printf("Checksum sent by the server and checksum generated locally do not match.\nData was modified during transfer.\nThe file has not been saved to disk.\nEXITTING PROGRAM\n\n")
@@ -96,13 +108,23 @@ func Client(connPtr *net.Conn, File *RecvedFile) {
 
 	diskFile.Write(File.DataBytes)
 
-	File.NameEncryptedBytes = recvFileName(connPtr, File)
-	File.Name = string(utils.ByteSlicesArrayToByteSlices(utils.DecryptRSA256Longer(&privateKey, &File.NameEncryptedBytes)))
+	File.NameEncryptedBytes, err = recvFileName(connPtr, File)
+	if err != nil {
+		fmt.Printf("%s", err.Error())
+		return
+	}
+
+	File.NameBytes, err = utils.DecryptRSA(&privateKey, &File.NameEncryptedBytes)
+	if err != nil {
+		fmt.Printf("%s", err.Error())
+		return
+	}
+
+	File.Name = string(File.NameBytes)
 
 	diskFile.Close()
 
 	os.Rename(File.Path+"/inDownload.foobar", File.Path+"/"+File.Name)
 
 	(*connPtr).Close()
-
 }
